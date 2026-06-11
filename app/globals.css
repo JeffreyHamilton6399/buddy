@@ -82,4 +82,10 @@ body {
   100% { transform: scale(1.9); opacity: 0;   }
 }
 
+/* Spinner for the processing state on the mic button */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 .msg-enter { animation: msg-in 0.18s ease both; }

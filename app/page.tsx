@@ -118,6 +118,16 @@ function SpeakerOffIcon({ className, style }: IconProps) {
   );
 }
 
+function SpinnerIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"
+        style={{ animation: 'spin 1s linear infinite', transformOrigin: 'center' }}
+      />
+    </svg>
+  );
+}
+
 function ChatIcon({ className, style }: IconProps) {
   return (
     <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -296,10 +306,13 @@ export default function ChatPage() {
   }, []);
 
   const {
-    isListening, isSpeaking, interimTranscript, micError,
+    micState, isSpeaking, micError,
     startListening, stopListening, speak, cancelSpeech,
-    speechInputSupported, speechOutputSupported,
+    micSupported, synthSupported,
   } = useVoice(handleVoiceTranscript, voiceEnabled);
+
+  const isListening  = micState === 'recording';
+  const isProcessing = micState === 'processing';
 
   // ── Scroll to latest message ───────────────────────────────────────────
   useEffect(() => {
@@ -335,7 +348,7 @@ export default function ChatPage() {
       const reply: string = data.reply;
       setMessages([...history, { role: 'assistant', content: reply }]);
 
-      if (voiceEnabled && speechOutputSupported) {
+      if (voiceEnabled && synthSupported) {
         speak(reply, getCharacter(selectedCharId));
       }
     } catch (err) {
@@ -344,7 +357,7 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
     }
-  }, [input, loading, messages, selectedCharId, voiceEnabled, speak, cancelSpeech, speechOutputSupported]);
+  }, [input, loading, messages, selectedCharId, voiceEnabled, speak, cancelSpeech, synthSupported]);
 
   // Keep bridge ref current
   useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
@@ -362,9 +375,7 @@ export default function ChatPage() {
     setInput('');
   }
 
-  const activeChar   = getCharacter(selectedCharId);
-  // Show live interim transcript in the input area while mic is active
-  const displayValue = isListening && interimTranscript ? interimTranscript : input;
+  const activeChar = getCharacter(selectedCharId);
 
   /* ── Render ──────────────────────────────────────────────────────────── */
   return (
@@ -424,7 +435,7 @@ export default function ChatPage() {
           />
 
           {/* Voice output toggle */}
-          {speechOutputSupported && (
+          {synthSupported && (
             <button
               onClick={() => { if (voiceEnabled) cancelSpeech(); setVoiceEnabled((v) => !v); }}
               aria-label={voiceEnabled ? 'Turn voice off' : 'Turn voice on'}
@@ -491,8 +502,8 @@ export default function ChatPage() {
                   Start a conversation
                 </p>
                 <p className="text-sm" style={{ color: 'var(--text-3)' }}>
-                  {speechInputSupported
-                    ? 'Type a message or tap the mic to speak.'
+                  {micSupported
+                    ? 'Type a message or click the mic to speak.'
                     : 'Type a message below to get started.'}
                 </p>
               </div>
@@ -592,38 +603,48 @@ export default function ChatPage() {
             boxShadow:   '0 4px 24px var(--shadow)',
           }}
         >
-          {/* Mic button */}
-          {speechInputSupported && (
+          {/* Mic button — three states: idle / recording / processing */}
+          {micSupported && (
             <button
-              onMouseDown={startListening}
-              onMouseUp={stopListening}
-              onTouchStart={(e) => { e.preventDefault(); startListening(); }}
-              onTouchEnd={stopListening}
-              onClick={isListening ? stopListening : startListening}
-              aria-label={isListening ? 'Stop listening' : 'Start voice input'}
-              title="Hold or click to speak"
-              className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-colors mb-0.5"
+              onClick={() => {
+                if (isProcessing) return;
+                if (isListening) stopListening();
+                else startListening();
+              }}
+              aria-label={isListening ? 'Stop recording' : isProcessing ? 'Transcribing…' : 'Start voice input'}
+              title={isListening ? 'Click to stop' : isProcessing ? 'Transcribing…' : 'Click to speak'}
+              disabled={isProcessing}
+              className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-colors mb-0.5 disabled:cursor-not-allowed"
               style={{
-                background: isListening ? 'rgba(239,68,68,0.12)' : 'transparent',
-                color:      isListening ? '#f87171' : 'var(--text-3)',
-                border:     '1px solid',
-                borderColor: isListening ? 'rgba(239,68,68,0.3)' : 'transparent',
+                background:  isListening  ? 'rgba(239,68,68,0.12)' :
+                             isProcessing ? 'var(--accent-soft)'    : 'transparent',
+                color:       isListening  ? '#f87171' :
+                             isProcessing ? 'var(--accent)'         : 'var(--text-3)',
+                border:      '1px solid',
+                borderColor: isListening  ? 'rgba(239,68,68,0.3)'  :
+                             isProcessing ? 'var(--accent)'         : 'transparent',
               }}
             >
-              {/* Show animated waveform while listening, mic icon when idle */}
-              {isListening ? <WaveformBars /> : <MicIcon className="w-4 h-4" />}
+              {/* Waveform while recording; spinner while processing; mic when idle */}
+              {isListening  ? <WaveformBars /> :
+               isProcessing ? <SpinnerIcon className="w-4 h-4" /> :
+                              <MicIcon className="w-4 h-4" />}
             </button>
           )}
 
           {/* Textarea */}
           <textarea
             ref={textareaRef}
-            value={displayValue}
-            onChange={(e) => { if (!isListening) setInput(e.target.value); }}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isListening ? 'Listening…' : `Message ${activeChar.name}…`}
+            placeholder={
+              isListening  ? 'Recording… click mic to stop' :
+              isProcessing ? 'Transcribing your message…'   :
+              `Message ${activeChar.name}…`
+            }
             rows={1}
-            disabled={loading || isListening}
+            disabled={loading || isListening || isProcessing}
             className="flex-1 bg-transparent text-sm resize-none focus:outline-none leading-relaxed py-1.5 disabled:opacity-50"
             style={{
               color:       'var(--text)',
@@ -634,7 +655,7 @@ export default function ChatPage() {
           {/* Send button */}
           <button
             onClick={() => sendMessage()}
-            disabled={!input.trim() || loading || isListening}
+            disabled={!input.trim() || loading || isListening || isProcessing}
             aria-label="Send message"
             className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all active:scale-95 mb-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
             style={{
@@ -655,8 +676,8 @@ export default function ChatPage() {
 
         {/* Hint text */}
         <p className="text-center text-[11px] mt-2 select-none" style={{ color: 'var(--text-3)' }}>
-          {speechInputSupported
-            ? 'Enter to send · Shift+Enter for new line · Hold mic to speak'
+          {micSupported
+            ? 'Enter to send · Shift+Enter for new line · Click mic to speak'
             : 'Enter to send · Shift+Enter for new line'}
         </p>
       </div>
