@@ -1,33 +1,31 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "Buddy — Your AI Chat Assistant",
-  description: "A warm, friendly AI chatbot powered by Groq",
+  title: "Buddy",
+  description: "Your AI chat companion",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
+    // suppressHydrationWarning prevents React from complaining about the
+    // data-theme attribute being set by the inline script below before hydration.
+    <html lang="en" suppressHydrationWarning className={`${inter.variable} h-full`}>
+      <head>
+        {/*
+          Inline script runs synchronously before the browser paints,
+          so the correct theme is applied instantly with no flash of wrong color.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem('buddy-theme');document.documentElement.setAttribute('data-theme',t||'dark');}catch(e){}`,
+          }}
+        />
+      </head>
+      <body className="h-full">{children}</body>
     </html>
   );
 }

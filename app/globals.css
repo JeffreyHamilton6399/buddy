@@ -1,9 +1,85 @@
 @import "tailwindcss";
 
-/* Force dark base — Buddy is always dark mode */
-html,
-body {
-  height: 100%;
-  background-color: #030712; /* gray-950 */
-  color: #f1f5f9;
+/* ── Design tokens ──────────────────────────────────────────────────────────
+   All colors reference CSS variables so the entire UI flips with data-theme.
+   Dark is the default; light overrides every token.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  --bg:           #0f0f13;
+  --surface:      #141418;
+  --elevated:     #1d1d27;
+  --border:       rgba(255,255,255,0.065);
+  --border-strong: rgba(255,255,255,0.12);
+  --text:         #edecea;
+  --text-2:       #8c8a9c;
+  --text-3:       #54526a;
+  --accent:       #6366f1;
+  --accent-hover: #5254cc;
+  --accent-soft:  rgba(99,102,241,0.12);
+  --user-bg:      #6366f1;
+  --user-text:    #ffffff;
+  --buddy-bg:     #1d1d27;
+  --buddy-text:   #edecea;
+  --shadow:       rgba(0,0,0,0.5);
+  color-scheme: dark;
 }
+
+[data-theme="light"] {
+  --bg:           #f5f4f1;
+  --surface:      #ffffff;
+  --elevated:     #eceae7;
+  --border:       rgba(0,0,0,0.07);
+  --border-strong: rgba(0,0,0,0.14);
+  --text:         #1a1917;
+  --text-2:       #6b6977;
+  --text-3:       #a8a6b4;
+  --accent:       #6366f1;
+  --accent-hover: #5254cc;
+  --accent-soft:  rgba(99,102,241,0.10);
+  --user-bg:      #6366f1;
+  --user-text:    #ffffff;
+  --buddy-bg:     #eceae7;
+  --buddy-text:   #1a1917;
+  --shadow:       rgba(0,0,0,0.08);
+  color-scheme: light;
+}
+
+/* ── Base ───────────────────────────────────────────────────────────────── */
+html, body { height: 100%; }
+
+body {
+  font-family: var(--font-inter, system-ui, -apple-system, sans-serif);
+  background-color: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar          { width: 3px; height: 3px; }
+::-webkit-scrollbar-track    { background: transparent; }
+::-webkit-scrollbar-thumb    { background: var(--border); border-radius: 99px; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Animations ─────────────────────────────────────────────────────────── */
+
+/* Waveform bars animate vertically while mic is active */
+@keyframes audio-wave {
+  0%, 100% { transform: scaleY(0.2); }
+  50%       { transform: scaleY(1);   }
+}
+
+/* New messages slide up slightly */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+/* Expanding ring for the speaking indicator */
+@keyframes ping-ring {
+  0%   { transform: scale(1);   opacity: 0.5; }
+  100% { transform: scale(1.9); opacity: 0;   }
+}
+
+.msg-enter { animation: msg-in 0.18s ease both; }

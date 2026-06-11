@@ -1,37 +1,33 @@
 'use client';
 
 /**
- * useVoice — combines Web Speech Recognition (mic input) and Web Speech
- * Synthesis (text-to-speech output) into one hook for the Buddy voice feature.
+ * useVoice — Web Speech Recognition (input) + Web Speech Synthesis (output).
  *
- * Neither API requires an API key — they run entirely in the browser.
- * Recognition uses the device microphone; synthesis uses built-in OS voices.
+ * KEY FIX: A SpeechRecognition instance cannot be restarted after `onend`
+ * fires — attempting to do so silently fails in Chrome and Safari. We now
+ * create a *fresh* instance on every `startListening()` call, which is the
+ * correct pattern per the spec.
  *
- * Usage:
- *   const voice = useVoice(onFinalTranscript, voiceEnabled);
- *
- * @param onFinalTranscript  Called with trimmed text when the user stops speaking.
- * @param voiceEnabled       When false, speak() is a no-op.
+ * @param onFinalTranscript  Called with trimmed, final-result text.
+ * @param voiceEnabled       Gates speak() — false = silent.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Character } from '@/lib/characters';
 
-// webkit-prefixed types (Chrome/Safari) are declared in types/speech.d.ts
+// webkit-prefixed Recognition types live in types/speech.d.ts
 
 export interface UseVoiceReturn {
   isListening: boolean;
   isSpeaking: boolean;
-  /** Live partial transcript while the user is speaking — show this in the UI. */
   interimTranscript: string;
+  /** Set when microphone permission is denied or another hard error occurs. */
+  micError: string | null;
   startListening: () => void;
   stopListening: () => void;
-  /** Speak `text` in the given character's voice. No-op when voiceEnabled is false. */
   speak: (text: string, character: Character) => void;
   cancelSpeech: () => void;
-  /** True if SpeechRecognition is available in this browser. */
   speechInputSupported: boolean;
-  /** True if SpeechSynthesis is available in this browser. */
   speechOutputSupported: boolean;
 }
 
@@ -39,63 +35,73 @@ export function useVoice(
   onFinalTranscript: (text: string) => void,
   voiceEnabled: boolean,
 ): UseVoiceReturn {
-  const [isListening, setIsListening]             = useState(false);
-  const [isSpeaking, setIsSpeaking]               = useState(false);
+  const [isListening,       setIsListening]       = useState(false);
+  const [isSpeaking,        setIsSpeaking]        = useState(false);
   const [interimTranscript, setInterimTranscript] = useState('');
+  const [micError,          setMicError]          = useState<string | null>(null);
 
-  // Support flags — evaluated client-side only (avoids SSR mismatch)
-  const [speechInputSupported, setSpeechInputSupported]   = useState(false);
+  // API support is detected client-side to avoid SSR mismatches
+  const [speechInputSupported,  setSpeechInputSupported]  = useState(false);
   const [speechOutputSupported, setSpeechOutputSupported] = useState(false);
 
   useEffect(() => {
     setSpeechInputSupported(
-      'SpeechRecognition' in window || 'webkitSpeechRecognition' in window,
+      typeof window !== 'undefined' &&
+      ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window),
     );
-    setSpeechOutputSupported('speechSynthesis' in window);
+    setSpeechOutputSupported(
+      typeof window !== 'undefined' && 'speechSynthesis' in window,
+    );
   }, []);
 
-  // ── Refs ──────────────────────────────────────────────────────────────────
-  // Keep latest callback + flag in refs so recognition event handlers always
-  // see current values without needing to be torn down and re-created.
-
+  // Refs keep latest values accessible inside event handlers without
+  // requiring those handlers to be torn down and re-created on every render.
   const onFinalRef      = useRef(onFinalTranscript);
   const voiceEnabledRef = useRef(voiceEnabled);
-  useEffect(() => { onFinalRef.current = onFinalTranscript; }, [onFinalTranscript]);
-  useEffect(() => { voiceEnabledRef.current = voiceEnabled; }, [voiceEnabled]);
+  useEffect(() => { onFinalRef.current      = onFinalTranscript; }, [onFinalTranscript]);
+  useEffect(() => { voiceEnabledRef.current = voiceEnabled;      }, [voiceEnabled]);
 
+  // Holds whichever recognition session is currently active
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
-  // ── Speech Recognition setup ──────────────────────────────────────────────
-  useEffect(() => {
-    if (!speechInputSupported) return;
+  // Abort any live session on unmount
+  useEffect(() => () => { recognitionRef.current?.abort(); }, []);
 
+  // ── Speech input ─────────────────────────────────────────────────────────
+
+  const startListening = useCallback(() => {
+    if (!speechInputSupported || isListening) return;
+
+    // Auto-stop Buddy speaking the moment the user starts talking
+    if (speechOutputSupported) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    }
+
+    // Fresh instance every time — this is the critical fix.
+    // Reusing an ended SpeechRecognition causes silent failures in Chrome/Safari.
     const SpeechRec = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     const rec = new SpeechRec();
 
-    rec.continuous     = false; // Stops automatically after a pause
-    rec.interimResults = true;  // Deliver partial results for live feedback
+    rec.continuous     = false; // Stop automatically after the first pause
+    rec.interimResults = true;  // Stream partial results for live display
     rec.lang           = 'en-US';
 
     rec.onresult = (event: SpeechRecognitionEvent) => {
-      let interim  = '';
-      let finished = '';
+      let interim = '';
+      let final   = '';
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const chunk = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finished += chunk;
-        } else {
-          interim += chunk;
-        }
+        if (event.results[i].isFinal) final   += chunk;
+        else                          interim += chunk;
       }
 
-      // Show partial text in real-time so the user can see what's being heard
       setInterimTranscript(interim);
 
-      // When the browser signals a final result, hand it off and clear interim
-      if (finished) {
+      if (final) {
         setInterimTranscript('');
-        onFinalRef.current(finished.trim());
+        onFinalRef.current(final.trim());
       }
     };
 
@@ -105,67 +111,58 @@ export function useVoice(
     };
 
     rec.onerror = (event: SpeechRecognitionErrorEvent) => {
-      // 'no-speech' fires when the user was silent; 'aborted' fires on manual stop.
-      // Both are expected — only log genuinely unexpected errors.
-      if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        console.error('[useVoice] recognition error:', event.error);
-      }
       setIsListening(false);
       setInterimTranscript('');
+
+      if (event.error === 'not-allowed') {
+        // Permanent permission denial — surface a friendly message
+        setMicError(
+          'Microphone access was denied. To fix this, click the lock icon in your browser address bar and allow the microphone, then refresh the page.',
+        );
+      } else if (event.error === 'no-speech') {
+        // User didn't say anything — not an error
+      } else if (event.error !== 'aborted') {
+        console.error('[useVoice] recognition error:', event.error);
+      }
     };
 
     recognitionRef.current = rec;
 
-    return () => { rec.abort(); }; // Clean up on unmount
-  }, [speechInputSupported]);
-
-  // ── Public API ────────────────────────────────────────────────────────────
-
-  /** Start the microphone. Cancels any ongoing Buddy speech first. */
-  const startListening = useCallback(() => {
-    if (!recognitionRef.current || isListening) return;
-
-    // Auto-stop Buddy speaking when the user starts talking
-    if (speechOutputSupported) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-    }
-
     try {
-      recognitionRef.current.start();
+      rec.start();
       setIsListening(true);
-    } catch {
-      // Thrown if recognition was already started — harmless, ignore
+      setMicError(null); // Clear any previous error on a successful start
+    } catch (err) {
+      // Can throw if called in rapid succession — log and recover cleanly
+      console.error('[useVoice] start() threw:', err);
+      setIsListening(false);
     }
-  }, [isListening, speechOutputSupported]);
+  }, [speechInputSupported, speechOutputSupported, isListening]);
 
-  /** Stop listening early (e.g. button release for push-to-talk). */
   const stopListening = useCallback(() => {
     recognitionRef.current?.stop();
   }, []);
 
+  // ── Speech output ─────────────────────────────────────────────────────────
+
   /**
-   * Speak `text` in the character's voice.
-   *
-   * Chrome loads voices asynchronously on first call, so we listen for the
-   * `voiceschanged` event when the voice list is initially empty.
+   * Read `text` in the given character's voice.
+   * Chrome loads voices asynchronously on first call, so we listen for
+   * `voiceschanged` when the list is empty.
    */
   const speak = useCallback((text: string, character: Character) => {
     if (!speechOutputSupported || !voiceEnabledRef.current) return;
 
-    // Cancel whatever is currently playing before queuing a new utterance
     window.speechSynthesis.cancel();
 
     const utterance    = new SpeechSynthesisUtterance(text);
     utterance.pitch    = character.pitch;
     utterance.rate     = character.rate;
     utterance.volume   = character.volume;
+    utterance.onstart  = () => setIsSpeaking(true);
+    utterance.onend    = () => setIsSpeaking(false);
+    utterance.onerror  = () => setIsSpeaking(false);
 
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend   = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
-
-    /** Try to find a preferred voice and then speak. */
     const trySpeak = () => {
       const voices  = window.speechSynthesis.getVoices();
       const matched = voices.find((v) =>
@@ -177,7 +174,7 @@ export function useVoice(
       window.speechSynthesis.speak(utterance);
     };
 
-    // Voices may not be loaded yet on first call (Chrome quirk)
+    // Voices may not be available yet on first call (Chrome quirk)
     if (window.speechSynthesis.getVoices().length === 0) {
       window.speechSynthesis.addEventListener('voiceschanged', trySpeak, { once: true });
     } else {
@@ -185,7 +182,6 @@ export function useVoice(
     }
   }, [speechOutputSupported]);
 
-  /** Immediately stop Buddy speaking. */
   const cancelSpeech = useCallback(() => {
     if (!speechOutputSupported) return;
     window.speechSynthesis.cancel();
@@ -193,14 +189,8 @@ export function useVoice(
   }, [speechOutputSupported]);
 
   return {
-    isListening,
-    isSpeaking,
-    interimTranscript,
-    startListening,
-    stopListening,
-    speak,
-    cancelSpeech,
-    speechInputSupported,
-    speechOutputSupported,
+    isListening, isSpeaking, interimTranscript, micError,
+    startListening, stopListening, speak, cancelSpeech,
+    speechInputSupported, speechOutputSupported,
   };
 }

@@ -1,102 +1,315 @@
 'use client';
 
 /**
- * Main chat page — renders the Buddy conversation UI.
- *
- * Features:
- *  - Dark-mode, mobile-friendly layout
- *  - Character picker (8 personas, each with unique voice + personality)
- *  - Voice input  via Web Speech Recognition (mic button)
- *  - Voice output via Web Speech Synthesis  (auto-reads Buddy's replies)
- *  - Voice on/off toggle and speaking/listening visual indicators
- *  - Clear chat button
+ * Buddy chat page — polished dark/light UI with voice, character switching,
+ * and theme persistence via localStorage.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { CHARACTERS, getCharacter } from '@/lib/characters';
 import { useVoice } from '@/hooks/useVoice';
 
+/* ── Types ─────────────────────────────────────────────────────────────── */
+
 interface Message {
   role: 'user' | 'assistant';
   content: string;
 }
 
-// ── Auto-resize textarea ───────────────────────────────────────────────────
-// Grows up to 128 px, then scrolls internally.
-function useAutoResize(value: string) {
+/* ── Hooks ─────────────────────────────────────────────────────────────── */
+
+/** Reads theme from localStorage, applies data-theme to <html>, persists changes. */
+function useTheme() {
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  useEffect(() => {
+    // Sync React state with whatever the inline script set (or default dark)
+    const saved = (localStorage.getItem('buddy-theme') as 'dark' | 'light') ?? 'dark';
+    setTheme(saved);
+  }, []);
+
+  const toggle = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('buddy-theme', next);
+      return next;
+    });
+  }, []);
+
+  return { theme, toggle };
+}
+
+/** Auto-grows a textarea up to maxHeight px, then scrolls. */
+function useAutoResize(value: string, maxHeight = 128) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
-  }, [value]);
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  }, [value, maxHeight]);
   return ref;
 }
 
-// ── Mic icon SVG ──────────────────────────────────────────────────────────
-function MicIcon({ className }: { className?: string }) {
+/* ── SVG Icons (inline, zero dependencies) ─────────────────────────────── */
+
+type IconProps = { className?: string; style?: React.CSSProperties };
+
+function SunIcon({ className, style }: IconProps) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={className}>
-      <path d="M12 1a4 4 0 00-4 4v7a4 4 0 008 0V5a4 4 0 00-4-4z" />
-      <path d="M6.25 10.5a.75.75 0 00-1.5 0V12a7.001 7.001 0 006.25 6.956V20.5H9a.75.75 0 000 1.5h6a.75.75 0 000-1.5h-2v-1.544A7.001 7.001 0 0019.25 12v-1.5a.75.75 0 00-1.5 0V12a5.5 5.5 0 01-11 0v-1.5z" />
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
     </svg>
   );
 }
 
-// ── Send icon SVG ─────────────────────────────────────────────────────────
-function SendIcon({ className }: { className?: string }) {
+function MoonIcon({ className, style }: IconProps) {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={className}>
-      <path d="M3.105 2.289a.75.75 0 00-.826.95l1.414 4.925A1.5 1.5 0 005.135 9.25h6.115a.75.75 0 010 1.5H5.135a1.5 1.5 0 00-1.442 1.086l-1.414 4.926a.75.75 0 00.826.95 28.896 28.896 0 0015.293-7.154.75.75 0 000-1.115A28.897 28.897 0 003.105 2.289z" />
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+function MicIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 10a7 7 0 0 0 14 0M12 19v3M9 22h6" />
+    </svg>
+  );
+}
+
+function SendIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
+function SpeakerIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" />
+    </svg>
+  );
+}
+
+function SpeakerOffIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <line x1="23" y1="9" x2="17" y2="15" />
+      <line x1="17" y1="9" x2="23" y2="15" />
+    </svg>
+  );
+}
+
+function ChatIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+/* ── WaveformBars ────────────────────────────────────────────────────────
+   Four animated bars that visualise audio activity while the mic is on.   */
+
+function WaveformBars() {
+  return (
+    <span className="flex items-center gap-[3px]" aria-hidden>
+      {[0, 1, 2, 3].map((i) => (
+        <span
+          key={i}
+          className="w-[3px] rounded-full bg-current origin-center"
+          style={{
+            height: 14,
+            animation: 'audio-wave 0.75s ease-in-out infinite',
+            animationDelay: `${i * 0.12}s`,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/* ── ThemeToggle ─────────────────────────────────────────────────────────
+   Animated pill switch. Circle slides left↔right; icon swaps.            */
+
+function ThemeToggle({ theme, onToggle }: { theme: 'dark' | 'light'; onToggle: () => void }) {
+  const isLight = theme === 'light';
+  return (
+    <button
+      onClick={onToggle}
+      role="switch"
+      aria-checked={isLight}
+      aria-label={`Switch to ${isLight ? 'dark' : 'light'} mode`}
+      className="relative flex items-center w-12 h-6 rounded-full border transition-colors duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+      style={{
+        background: isLight ? 'var(--accent-soft)' : 'var(--elevated)',
+        borderColor: isLight ? 'var(--accent)' : 'var(--border)',
+      }}
+    >
+      {/* Sliding circle */}
+      <span
+        className="absolute w-5 h-5 rounded-full flex items-center justify-center transition-all duration-300 shadow-sm"
+        style={{
+          left: isLight ? 'calc(100% - 22px)' : '2px',
+          background: isLight ? 'var(--accent)' : 'var(--text-2)',
+        }}
+      >
+        {isLight
+          ? <SunIcon className="w-2.5 h-2.5 text-white" />
+          : <MoonIcon className="w-2.5 h-2.5" style={{ color: 'var(--bg)' } as React.CSSProperties} />}
+      </span>
+    </button>
+  );
+}
+
+/* ── CharacterDropdown ───────────────────────────────────────────────────
+   Custom select built from scratch — no native <select>.
+   Closes when you click outside or pick an option.                       */
+
+function CharacterDropdown({
+  selectedId,
+  onChange,
+  onSwitch,
+}: {
+  selectedId: string;
+  onChange: (id: string) => void;
+  onSwitch?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef    = useRef<HTMLDivElement>(null);
+  const selected        = getCharacter(selectedId);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    function handle(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        style={{
+          background:  open ? 'var(--elevated)' : 'transparent',
+          color:       'var(--text-2)',
+          border:      '1px solid',
+          borderColor: open ? 'var(--border-strong)' : 'var(--border)',
+        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--text)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-strong)'; }}
+        onMouseLeave={(e) => { if (!open) { (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-2)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)'; } }}
+      >
+        {selected.name}
+        <ChevronDownIcon
+          className="w-3 h-3 transition-transform duration-200"
+          style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)' } as React.CSSProperties}
+        />
+      </button>
+
+      {/* Dropdown panel */}
+      {open && (
+        <div
+          className="absolute right-0 top-full mt-1.5 w-44 rounded-xl overflow-hidden z-50 py-1"
+          style={{
+            background:  'var(--surface)',
+            border:      '1px solid var(--border)',
+            boxShadow:   '0 8px 32px var(--shadow)',
+          }}
+        >
+          {CHARACTERS.map((char) => {
+            const isActive = char.id === selectedId;
+            return (
+              <button
+                key={char.id}
+                onClick={() => { onChange(char.id); onSwitch?.(); setOpen(false); }}
+                className="w-full text-left px-4 py-2 text-sm transition-colors"
+                style={{
+                  color:      isActive ? 'var(--accent)' : 'var(--text-2)',
+                  background: isActive ? 'var(--accent-soft)' : 'transparent',
+                  fontWeight: isActive ? 500 : 400,
+                }}
+                onMouseEnter={(e) => {
+                  if (!isActive) {
+                    (e.currentTarget as HTMLButtonElement).style.background = 'var(--elevated)';
+                    (e.currentTarget as HTMLButtonElement).style.color      = 'var(--text)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isActive) {
+                    (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+                    (e.currentTarget as HTMLButtonElement).style.color      = 'var(--text-2)';
+                  }
+                }}
+              >
+                {char.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Main component ──────────────────────────────────────────────────────── */
 
 export default function ChatPage() {
-  const [messages, setMessages]               = useState<Message[]>([]);
-  const [input, setInput]                     = useState('');
-  const [loading, setLoading]                 = useState(false);
-  const [voiceEnabled, setVoiceEnabled]       = useState(false);
-  const [selectedCharId, setSelectedCharId]   = useState('buddy');
+  const [messages,        setMessages]        = useState<Message[]>([]);
+  const [input,           setInput]           = useState('');
+  const [loading,         setLoading]         = useState(false);
+  const [voiceEnabled,    setVoiceEnabled]    = useState(false);
+  const [selectedCharId,  setSelectedCharId]  = useState('buddy');
 
+  const { theme, toggle: toggleTheme } = useTheme();
   const bottomRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useAutoResize(input);
 
-  // ── Voice ref bridge ──────────────────────────────────────────────────────
-  // useVoice needs a stable callback, but sendMessage changes on every render
-  // (it closes over messages, input, etc.). We use a ref so the voice hook
-  // always calls the latest version without triggering unnecessary re-renders.
+  // Bridge ref so the stable voice callback always calls the latest sendMessage
   const sendMessageRef = useRef<((text?: string) => Promise<void>) | null>(null);
 
-  // This stable callback is what we hand to useVoice
   const handleVoiceTranscript = useCallback((text: string) => {
     sendMessageRef.current?.(text);
   }, []);
 
   const {
-    isListening,
-    isSpeaking,
-    interimTranscript,
-    startListening,
-    stopListening,
-    speak,
-    cancelSpeech,
-    speechInputSupported,
-    speechOutputSupported,
+    isListening, isSpeaking, interimTranscript, micError,
+    startListening, stopListening, speak, cancelSpeech,
+    speechInputSupported, speechOutputSupported,
   } = useVoice(handleVoiceTranscript, voiceEnabled);
 
-  // ── Auto-scroll ───────────────────────────────────────────────────────────
+  // ── Scroll to latest message ───────────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  // ── Core send logic ───────────────────────────────────────────────────────
+  // ── Core send ──────────────────────────────────────────────────────────
   /**
-   * Send a message to /api/chat and append the assistant reply.
-   * @param textOverride  Text from voice recognition (bypasses the input field).
+   * Send a message to /api/chat.
+   * @param textOverride  Bypasses the textarea (used for voice input).
    */
   const sendMessage = useCallback(async (textOverride?: string) => {
     const text = (textOverride !== undefined ? textOverride : input).trim();
@@ -106,46 +319,36 @@ export default function ChatPage() {
     const history = [...messages, userMsg];
 
     setMessages(history);
-    if (textOverride === undefined) setInput(''); // Only clear the typed input
+    if (textOverride === undefined) setInput('');
     setLoading(true);
-
-    // Stop any in-progress speech before sending the next message
     cancelSpeech();
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
+      const res  = await fetch('/api/chat', {
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, character: selectedCharId }),
+        body:    JSON.stringify({ messages: history, character: selectedCharId }),
       });
-
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'API error');
 
       const reply: string = data.reply;
       setMessages([...history, { role: 'assistant', content: reply }]);
 
-      // Read the reply aloud if voice output is enabled
       if (voiceEnabled && speechOutputSupported) {
         speak(reply, getCharacter(selectedCharId));
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong.';
-      setMessages([
-        ...history,
-        { role: 'assistant', content: `Oops! ${msg} Please try again.` },
-      ]);
+      setMessages([...history, { role: 'assistant', content: `Something went wrong — ${msg} Please try again.` }]);
     } finally {
       setLoading(false);
     }
   }, [input, loading, messages, selectedCharId, voiceEnabled, speak, cancelSpeech, speechOutputSupported]);
 
-  // Keep the bridge ref current on every render
-  useEffect(() => {
-    sendMessageRef.current = sendMessage;
-  }, [sendMessage]);
+  // Keep bridge ref current
+  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
 
-  // Enter to send; Shift+Enter for a new line
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -159,174 +362,237 @@ export default function ChatPage() {
     setInput('');
   }
 
-  const activeChar = getCharacter(selectedCharId);
-
-  // While the mic is active, show the live interim transcript in the input area
+  const activeChar   = getCharacter(selectedCharId);
+  // Show live interim transcript in the input area while mic is active
   const displayValue = isListening && interimTranscript ? interimTranscript : input;
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  /* ── Render ──────────────────────────────────────────────────────────── */
   return (
-    <div className="flex flex-col h-screen bg-gray-950 text-gray-100 font-sans">
+    <div
+      className="flex flex-col h-screen"
+      style={{ background: 'var(--bg)', color: 'var(--text)' }}
+    >
 
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-800 bg-gray-900/80 backdrop-blur-sm shrink-0">
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <header
+        className="flex items-center justify-between px-4 h-14 shrink-0 border-b"
+        style={{
+          background:  'var(--surface)',
+          borderColor: 'var(--border)',
+        }}
+      >
+        {/* Wordmark + speaking indicator */}
         <div className="flex items-center gap-3">
-
-          {/* Character avatar — ping animation while Buddy is speaking */}
-          <div className="relative w-9 h-9 shrink-0">
+          {/* Small avatar circle — pulses while Buddy is speaking */}
+          <div className="relative w-7 h-7 shrink-0">
             {isSpeaking && (
-              <span className="absolute inset-0 rounded-full bg-indigo-400/40 animate-ping pointer-events-none" />
+              <span
+                className="absolute inset-0 rounded-full pointer-events-none"
+                style={{
+                  background: 'var(--accent)',
+                  animation:  'ping-ring 1.2s ease-out infinite',
+                }}
+              />
             )}
-            <div className="relative w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-lg shadow-lg">
-              {activeChar.emoji}
+            <div
+              className="relative w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold"
+              style={{ background: 'var(--accent)', color: '#fff' }}
+            >
+              {activeChar.name[0]}
             </div>
           </div>
 
-          {/* Name + status line */}
           <div>
-            <h1 className="font-semibold text-white text-sm leading-tight">{activeChar.name}</h1>
-            <p className={`text-xs leading-tight transition-colors ${
-              isSpeaking  ? 'text-indigo-400' :
-              isListening ? 'text-red-400'    :
-              'text-gray-400'
-            }`}>
-              {isSpeaking ? 'Speaking…' : isListening ? 'Listening…' : 'Your friendly AI'}
+            <p className="text-sm font-semibold leading-tight" style={{ color: 'var(--text)' }}>
+              Buddy
+            </p>
+            <p
+              className="text-xs leading-tight transition-colors"
+              style={{ color: isSpeaking ? 'var(--accent)' : isListening ? '#f87171' : 'var(--text-3)' }}
+            >
+              {isSpeaking ? 'Speaking' : isListening ? 'Listening' : activeChar.name}
             </p>
           </div>
         </div>
 
-        {/* Right-side controls */}
+        {/* Right controls */}
         <div className="flex items-center gap-2">
+          <CharacterDropdown
+            selectedId={selectedCharId}
+            onChange={setSelectedCharId}
+            onSwitch={cancelSpeech}
+          />
 
-          {/* Voice toggle — only shown when synthesis is available */}
+          {/* Voice output toggle */}
           {speechOutputSupported && (
             <button
-              onClick={() => {
-                if (voiceEnabled) cancelSpeech(); // Stop speaking immediately when toggled off
-                setVoiceEnabled((v) => !v);
-              }}
+              onClick={() => { if (voiceEnabled) cancelSpeech(); setVoiceEnabled((v) => !v); }}
+              aria-label={voiceEnabled ? 'Turn voice off' : 'Turn voice on'}
               title={voiceEnabled ? 'Turn voice off' : 'Turn voice on'}
-              className={`text-xs px-3 py-1.5 rounded-lg border transition-all active:scale-95 ${
-                voiceEnabled
-                  ? 'text-indigo-300 border-indigo-600 bg-indigo-600/20 hover:bg-indigo-600/30'
-                  : 'text-gray-400 border-gray-700 hover:border-gray-500 hover:text-gray-200'
-              }`}
+              className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+              style={{
+                background:  voiceEnabled ? 'var(--accent-soft)' : 'transparent',
+                color:       voiceEnabled ? 'var(--accent)' : 'var(--text-3)',
+                border:      '1px solid',
+                borderColor: voiceEnabled ? 'var(--accent)' : 'var(--border)',
+              }}
             >
-              {voiceEnabled ? '🔊 Voice on' : '🔇 Voice off'}
+              {voiceEnabled
+                ? <SpeakerIcon className="w-3.5 h-3.5" />
+                : <SpeakerOffIcon className="w-3.5 h-3.5" />}
             </button>
           )}
 
+          {/* Light/dark toggle */}
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+
+          {/* Clear chat — only visible when there are messages */}
           {messages.length > 0 && (
             <button
               onClick={clearChat}
-              className="text-xs text-gray-400 hover:text-white px-3 py-1.5 rounded-lg border border-gray-700 hover:border-gray-500 transition-all active:scale-95"
+              className="h-8 px-3 rounded-lg text-xs font-medium transition-colors"
+              style={{
+                color:       'var(--text-3)',
+                border:      '1px solid var(--border)',
+                background:  'transparent',
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.color       = 'var(--text)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-strong)';
+                (e.currentTarget as HTMLButtonElement).style.background  = 'var(--elevated)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.color       = 'var(--text-3)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
+                (e.currentTarget as HTMLButtonElement).style.background  = 'transparent';
+              }}
             >
-              Clear chat
+              Clear
             </button>
           )}
         </div>
       </header>
 
-      {/* ── Character picker ───────────────────────────────────────────────── */}
-      {/* Horizontally scrollable strip of character pills */}
-      <div className="shrink-0 overflow-x-auto border-b border-gray-800 bg-gray-900/40 scrollbar-hide">
-        <div className="flex gap-2 px-4 py-2.5 min-w-max">
-          {CHARACTERS.map((char) => (
-            <button
-              key={char.id}
-              onClick={() => {
-                setSelectedCharId(char.id);
-                cancelSpeech(); // Stop current speech when switching personas
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 whitespace-nowrap select-none ${
-                selectedCharId === char.id
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
-              }`}
-            >
-              <span>{char.emoji}</span>
-              <span>{char.name}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* ── Messages ────────────────────────────────────────────────────── */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-4 py-8 space-y-3">
 
-      {/* ── Message list ──────────────────────────────────────────────────── */}
-      <main className="flex-1 overflow-y-auto px-4 py-6">
-
-        {/* Empty-state welcome screen */}
-        {messages.length === 0 && !loading && (
-          <div className="flex flex-col items-center justify-center h-full text-center gap-4 select-none">
-            <div className="w-16 h-16 rounded-full bg-indigo-500/20 flex items-center justify-center text-3xl">
-              {activeChar.emoji}
-            </div>
-            <div>
-              <p className="font-semibold text-gray-200 text-lg">
-                Hey, I&apos;m {activeChar.name}!
-              </p>
-              <p className="text-gray-500 text-sm mt-1">
-                {speechInputSupported
-                  ? 'Type or tap the mic to start talking.'
-                  : 'Ask me anything — I\'m here to help.'}
-              </p>
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-4 max-w-2xl mx-auto">
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={`flex items-end gap-2 ${
-                msg.role === 'user' ? 'justify-end' : 'justify-start'
-              }`}
-            >
-              {/* Character avatar sits to the left of each assistant bubble */}
-              {msg.role === 'assistant' && (
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-sm shrink-0 mb-0.5">
-                  {activeChar.emoji}
-                </div>
-              )}
-
+          {/* Empty state */}
+          {messages.length === 0 && !loading && (
+            <div className="flex flex-col items-center justify-center gap-5 py-20 select-none text-center">
               <div
-                className={`max-w-[78%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
-                  msg.role === 'user'
-                    ? 'bg-indigo-600 text-white rounded-br-sm shadow-md'
-                    : 'bg-gray-800 text-gray-100 rounded-bl-sm shadow-sm'
-                }`}
+                className="w-14 h-14 rounded-2xl flex items-center justify-center"
+                style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
               >
-                {msg.content}
+                <ChatIcon className="w-7 h-7" />
               </div>
-            </div>
-          ))}
-
-          {/* Animated thinking dots while waiting for the API */}
-          {loading && (
-            <div className="flex items-end gap-2 justify-start">
-              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-sm shrink-0 mb-0.5">
-                {activeChar.emoji}
-              </div>
-              <div className="bg-gray-800 px-4 py-3 rounded-2xl rounded-bl-sm shadow-sm">
-                <div className="flex gap-1 items-center h-4">
-                  <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:0ms]" />
-                  <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:160ms]" />
-                  <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:320ms]" />
-                </div>
+              <div className="space-y-1">
+                <p className="font-semibold text-base" style={{ color: 'var(--text)' }}>
+                  Start a conversation
+                </p>
+                <p className="text-sm" style={{ color: 'var(--text-3)' }}>
+                  {speechInputSupported
+                    ? 'Type a message or tap the mic to speak.'
+                    : 'Type a message below to get started.'}
+                </p>
               </div>
             </div>
           )}
 
-          {/* Invisible scroll anchor */}
+          {/* Mic permission error banner */}
+          {micError && (
+            <div
+              className="rounded-xl px-4 py-3 text-sm msg-enter"
+              style={{
+                background:  'rgba(239,68,68,0.08)',
+                border:      '1px solid rgba(239,68,68,0.2)',
+                color:       '#fca5a5',
+              }}
+            >
+              {micError}
+            </div>
+          )}
+
+          {/* Message bubbles */}
+          {messages.map((msg, i) => {
+            const isUser = msg.role === 'user';
+            return (
+              <div key={i} className={`flex items-end gap-2.5 msg-enter ${isUser ? 'justify-end' : 'justify-start'}`}>
+
+                {/* Character initial — left side of assistant messages */}
+                {!isUser && (
+                  <div
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0 mb-0.5"
+                    style={{ background: 'var(--accent)', color: '#fff' }}
+                  >
+                    {activeChar.name[0]}
+                  </div>
+                )}
+
+                <div
+                  className="max-w-[75%] px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words"
+                  style={{
+                    background:   isUser ? 'var(--user-bg)'   : 'var(--buddy-bg)',
+                    color:        isUser ? 'var(--user-text)'  : 'var(--buddy-text)',
+                    borderRadius: isUser
+                      ? '18px 18px 4px 18px'
+                      : '18px 18px 18px 4px',
+                  }}
+                >
+                  {msg.content}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Thinking indicator */}
+          {loading && (
+            <div className="flex items-end gap-2.5 justify-start msg-enter">
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0 mb-0.5"
+                style={{ background: 'var(--accent)', color: '#fff' }}
+              >
+                {activeChar.name[0]}
+              </div>
+              <div
+                className="px-4 py-3 flex items-center gap-1"
+                style={{
+                  background:   'var(--buddy-bg)',
+                  borderRadius: '18px 18px 18px 4px',
+                }}
+              >
+                {[0, 1, 2].map((i) => (
+                  <span
+                    key={i}
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{
+                      background:      'var(--text-3)',
+                      animation:       'audio-wave 1s ease-in-out infinite',
+                      animationDelay:  `${i * 0.2}s`,
+                      display:         'inline-block',
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           <div ref={bottomRef} />
         </div>
       </main>
 
-      {/* ── Input bar ─────────────────────────────────────────────────────── */}
-      <div className="shrink-0 px-4 py-3 border-t border-gray-800 bg-gray-900/80 backdrop-blur-sm">
-        <div className="flex items-end gap-2 max-w-2xl mx-auto">
-
-          {/* Mic button — shown only when the browser supports speech recognition.
-              Click toggles on/off; holding also works (push-to-talk style). */}
+      {/* ── Input bar ───────────────────────────────────────────────────── */}
+      <div className="shrink-0 px-4 py-3" style={{ background: 'var(--bg)' }}>
+        {/* Floating card */}
+        <div
+          className="flex items-end gap-2 max-w-2xl mx-auto rounded-2xl px-3 py-2"
+          style={{
+            background:  'var(--surface)',
+            border:      '1px solid var(--border)',
+            boxShadow:   '0 4px 24px var(--shadow)',
+          }}
+        >
+          {/* Mic button */}
           {speechInputSupported && (
             <button
               onMouseDown={startListening}
@@ -336,33 +602,33 @@ export default function ChatPage() {
               onClick={isListening ? stopListening : startListening}
               aria-label={isListening ? 'Stop listening' : 'Start voice input'}
               title="Hold or click to speak"
-              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all active:scale-95 shrink-0 ${
-                isListening
-                  ? 'bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-600/40 animate-pulse'
-                  : 'bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200'
-              }`}
+              className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-colors mb-0.5"
+              style={{
+                background: isListening ? 'rgba(239,68,68,0.12)' : 'transparent',
+                color:      isListening ? '#f87171' : 'var(--text-3)',
+                border:     '1px solid',
+                borderColor: isListening ? 'rgba(239,68,68,0.3)' : 'transparent',
+              }}
             >
-              <MicIcon className="w-4 h-4" />
+              {/* Show animated waveform while listening, mic icon when idle */}
+              {isListening ? <WaveformBars /> : <MicIcon className="w-4 h-4" />}
             </button>
           )}
 
-          {/* Text input — disabled while listening (voice fills it) */}
+          {/* Textarea */}
           <textarea
             ref={textareaRef}
             value={displayValue}
-            onChange={(e) => {
-              // Ignore changes while the mic is active (prevent overwriting interim)
-              if (!isListening) setInput(e.target.value);
-            }}
+            onChange={(e) => { if (!isListening) setInput(e.target.value); }}
             onKeyDown={handleKeyDown}
             placeholder={isListening ? 'Listening…' : `Message ${activeChar.name}…`}
             rows={1}
             disabled={loading || isListening}
-            className={`flex-1 bg-gray-800 text-gray-100 placeholder-gray-500 rounded-xl px-4 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 disabled:opacity-50 leading-relaxed transition-all ${
-              isListening
-                ? 'focus:ring-red-500/50 border border-red-500/40'
-                : 'focus:ring-indigo-500/70'
-            }`}
+            className="flex-1 bg-transparent text-sm resize-none focus:outline-none leading-relaxed py-1.5 disabled:opacity-50"
+            style={{
+              color:       'var(--text)',
+              caretColor:  'var(--accent)',
+            }}
           />
 
           {/* Send button */}
@@ -370,13 +636,25 @@ export default function ChatPage() {
             onClick={() => sendMessage()}
             disabled={!input.trim() || loading || isListening}
             aria-label="Send message"
-            className="w-10 h-10 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center transition-all active:scale-95 shrink-0 shadow-md"
+            className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all active:scale-95 mb-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
+            style={{
+              background: 'var(--accent)',
+              color:      '#fff',
+            }}
+            onMouseEnter={(e) => {
+              if (!(e.currentTarget as HTMLButtonElement).disabled)
+                (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent-hover)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background = 'var(--accent)';
+            }}
           >
-            <SendIcon className="w-4 h-4" />
+            <SendIcon className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <p className="text-center text-xs text-gray-600 mt-2 select-none">
+        {/* Hint text */}
+        <p className="text-center text-[11px] mt-2 select-none" style={{ color: 'var(--text-3)' }}>
           {speechInputSupported
             ? 'Enter to send · Shift+Enter for new line · Hold mic to speak'
             : 'Enter to send · Shift+Enter for new line'}
