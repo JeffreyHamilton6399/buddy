@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
+import { getCharacter } from '@/lib/characters';
 
-// Groq client lives server-side only — GROQ_API_KEY is never sent to the browser
+// Groq client is instantiated server-side only — GROQ_API_KEY never reaches the browser
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-// Buddy's personality — tweak this to change how she responds
-const SYSTEM_PROMPT = `You are Buddy, a warm and friendly AI assistant. You're helpful, enthusiastic, and approachable — like a knowledgeable friend who's always happy to chat. Keep responses conversational and concise. Use a friendly, upbeat tone without being over the top. If you don't know something, say so honestly. Never reveal that you are built on any specific underlying model.`;
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -14,43 +12,53 @@ export interface ChatMessage {
 
 export async function POST(req: NextRequest) {
   try {
-    // Validate that a Groq API key is configured
     if (!process.env.GROQ_API_KEY) {
       return NextResponse.json(
         { error: 'GROQ_API_KEY is not set. Add it to .env.local.' },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
     const body = await req.json();
     const messages: ChatMessage[] = body.messages;
 
+    // The client sends a character ID; the server resolves the system prompt.
+    // This means clients can never inject arbitrary system prompts.
+    const characterId: string = body.character ?? 'buddy';
+
     if (!Array.isArray(messages) || messages.length === 0) {
-      return NextResponse.json({ error: 'messages must be a non-empty array' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'messages must be a non-empty array' },
+        { status: 400 },
+      );
     }
 
-    // Only allow known roles to prevent prompt injection via crafted role values
+    // Look up the server-side personality for this character
+    const character = getCharacter(characterId);
+
+    // Sanitize: strip any messages with unknown roles to prevent prompt injection
     const sanitized = messages
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role, content: String(m.content) }));
 
     const completion = await groq.chat.completions.create({
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...sanitized],
+      messages: [{ role: 'system', content: character.systemPrompt }, ...sanitized],
       model: 'llama-3.3-70b-versatile',
-      temperature: 0.7,
+      // Slightly higher temperature for personality characters feels more natural
+      temperature: characterId === 'spock' ? 0.4 : 0.8,
       max_tokens: 1024,
     });
 
     const reply =
       completion.choices[0]?.message?.content ??
-      "Sorry, I couldn't come up with a response. Try again!";
+      "Sorry, I couldn't come up with a response!";
 
     return NextResponse.json({ reply });
   } catch (error) {
-    console.error('[/api/chat] Groq error:', error);
+    console.error('[/api/chat] error:', error);
     return NextResponse.json(
-      { error: 'Buddy ran into a problem. Please try again.' },
-      { status: 500 }
+      { error: 'Something went wrong. Please try again.' },
+      { status: 500 },
     );
   }
 }
