@@ -2,9 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 import { getCharacter } from '@/lib/characters';
 
-// Groq client is instantiated server-side only — GROQ_API_KEY never reaches the browser
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -18,6 +15,9 @@ export async function POST(req: NextRequest) {
         { status: 500 },
       );
     }
+
+    // Instantiate inside the handler so the build never runs this at compile time
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
     const body = await req.json();
     const messages: ChatMessage[] = body.messages;
