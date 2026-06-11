@@ -67,7 +67,8 @@ If "${name}" is a recognisable character (fiction, history, pop culture, mytholo
 — Blend your knowledge with the user's description (user notes take priority)
 
 Write 200–350 words, starting with "You are ${name}..."
-No preamble, no headers — just the system prompt itself.`,
+No preamble, no headers — just the system prompt itself.
+End with one sentence instructing the character to express physical reactions using asterisks — *smiles*, *pauses*, *raises an eyebrow* — wherever they feel genuine.`,
         },
       ],
     });

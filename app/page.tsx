@@ -367,6 +367,103 @@ function StreamingBubble({ content }: { content: string }) {
   );
 }
 
+/* ── GeminiWave ──────────────────────────────────────────────────────────────
+   Canvas-based animated sine-wave visualization inspired by Gemini's audio UI.
+   Reads the latest mode from a ref so the animation loop never needs restarting.
+   Speaking mode: blue / purple / teal. Listening mode: red / orange / amber.  */
+
+function GeminiWave({ mode }: { mode: 'speaking' | 'listening' | null }) {
+  const canvasRef  = useRef<HTMLCanvasElement>(null);
+  const modeRef    = useRef(mode);
+  const opacityRef = useRef(0);
+  const frameRef   = useRef(0);
+
+  // Keep the ref current without restarting the animation loop
+  useEffect(() => { modeRef.current = mode; }, [mode]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const c = ctx; // non-null alias so TypeScript sees it as non-null inside draw()
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const SPEAKING = [
+      { color: '#818cf8', amp: 8,  freq: 0.024, speed: 0.040, phase: 0.0 },
+      { color: '#38bdf8', amp: 6,  freq: 0.017, speed: 0.028, phase: 1.8 },
+      { color: '#a78bfa', amp: 9,  freq: 0.031, speed: 0.052, phase: 3.6 },
+      { color: '#34d399', amp: 4,  freq: 0.019, speed: 0.022, phase: 2.7 },
+    ];
+    const LISTENING = [
+      { color: '#f87171', amp: 7,  freq: 0.026, speed: 0.048, phase: 0.0 },
+      { color: '#fb923c', amp: 9,  freq: 0.020, speed: 0.036, phase: 2.1 },
+      { color: '#fbbf24', amp: 5,  freq: 0.014, speed: 0.028, phase: 1.4 },
+    ];
+
+    let raf: number;
+
+    function draw() {
+      const currentMode = modeRef.current;
+      const target = currentMode !== null ? 1 : 0;
+
+      opacityRef.current += (target - opacityRef.current) * 0.07;
+      if (Math.abs(opacityRef.current - target) < 0.003) opacityRef.current = target;
+
+      c.clearRect(0, 0, W, H);
+
+      if (opacityRef.current > 0.01) {
+        frameRef.current++;
+        const waves = currentMode === 'listening' ? LISTENING : SPEAKING;
+
+        waves.forEach((wave, i) => {
+          c.beginPath();
+          c.strokeStyle = wave.color;
+          c.lineWidth   = 1.5;
+          c.globalAlpha = opacityRef.current * (0.45 + i * 0.15);
+          for (let x = 0; x <= W; x++) {
+            const y = H / 2 + Math.sin(x * wave.freq + frameRef.current * wave.speed + wave.phase) * wave.amp;
+            if (x === 0) c.moveTo(x, y); else c.lineTo(x, y);
+          }
+          c.stroke();
+        });
+
+        c.globalAlpha = 1;
+      }
+
+      raf = requestAnimationFrame(draw);
+    }
+
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, []); // intentionally empty — reads mode from ref
+
+  return <canvas ref={canvasRef} width={140} height={28} style={{ display: 'block' }} />;
+}
+
+/* ── MessageText ─────────────────────────────────────────────────────────────
+   Parses *action text* expressions from character messages and renders them
+   as italic, violet-tinted text to signal physical emotion/gesture cues.    */
+
+function MessageText({ content }: { content: string }) {
+  const parts = content.split(/(\*[^*\n]+\*)/g);
+  return (
+    <>
+      {parts.map((part, i) =>
+        /^\*[^*]+\*$/.test(part) ? (
+          <em key={i} style={{ color: '#a78bfa', fontSize: '0.88em', fontStyle: 'italic', opacity: 0.9 }}>
+            {part}
+          </em>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
+}
+
 /* ── ConversationItem ────────────────────────────────────────────────────── */
 
 function ConversationItem({
@@ -783,6 +880,12 @@ export default function ChatPage() {
   const isListening  = micState === 'recording';
   const isProcessing = micState === 'processing';
 
+  // Drive the GeminiWave — speaking takes priority if somehow both are true
+  const waveMode: 'speaking' | 'listening' | null =
+    isSpeaking  ? 'speaking'  :
+    isListening ? 'listening' :
+    null;
+
   // Resolve the full character object for whichever id is selected
   const activeChar = selectedCharId.startsWith('custom-')
     ? (customCharacters.find((c) => c.id === selectedCharId) ?? CHARACTERS[0])
@@ -1011,11 +1114,18 @@ export default function ChatPage() {
 
             <div>
               <p className="text-sm font-semibold leading-tight" style={{ color: 'var(--text)' }}>Buddy</p>
-              <p className="text-xs leading-tight transition-colors"
-                style={{ color: isSpeaking ? 'var(--accent)' : isListening ? '#f87171' : 'var(--text-3)' }}
-              >
-                {isSpeaking ? 'Speaking' : isListening ? 'Listening' : activeChar.name}
-              </p>
+              <div className="relative" style={{ height: 20 }}>
+                {/* Static subtitle — fades out when wave is active */}
+                <p className="text-xs absolute inset-0 flex items-center transition-opacity duration-300"
+                  style={{ color: 'var(--text-3)', opacity: waveMode !== null ? 0 : 1, pointerEvents: 'none' }}
+                >
+                  {activeChar.name}
+                </p>
+                {/* Animated wave — canvas manages its own fade in/out */}
+                <div className="absolute inset-0 flex items-center" style={{ pointerEvents: 'none' }}>
+                  <GeminiWave mode={waveMode} />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1048,16 +1158,6 @@ export default function ChatPage() {
 
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
 
-            {messages.length > 0 && (
-              <button onClick={handleNewChat}
-                className="h-8 px-3 rounded-lg text-xs font-medium transition-colors"
-                style={{ color: 'var(--text-3)', border: '1px solid var(--border)', background: 'transparent' }}
-                onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.color = 'var(--text)'; b.style.borderColor = 'var(--border-strong)'; b.style.background = 'var(--elevated)'; }}
-                onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.color = 'var(--text-3)'; b.style.borderColor = 'var(--border)'; b.style.background = 'transparent'; }}
-              >
-                New Chat
-              </button>
-            )}
           </div>
         </header>
 
@@ -1111,7 +1211,7 @@ export default function ChatPage() {
                       borderRadius: isUser ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
                     }}
                   >
-                    {msg.content}
+                    {isUser ? msg.content : <MessageText content={msg.content} />}
                   </div>
                 </div>
               );
