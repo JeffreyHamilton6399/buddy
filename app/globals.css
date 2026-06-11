@@ -82,6 +82,12 @@ body {
   100% { transform: scale(1.9); opacity: 0;   }
 }
 
+/* Word-by-word streaming fade-in */
+@keyframes word-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 /* Spinner for the processing state on the mic button */
 @keyframes spin {
   from { transform: rotate(0deg); }

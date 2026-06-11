@@ -3,16 +3,14 @@
 /**
  * useVoice
  *
- * Voice INPUT:  MediaRecorder API → /api/transcribe (Groq Whisper)
- *   - Works in Chrome, Firefox, Safari, and mobile browsers
- *   - No dependency on the Web Speech API, which silently fails in many
- *     environments and isn't supported at all in Firefox
- *   - Three mic states: idle → recording → processing (transcribing)
+ * Voice INPUT:   MediaRecorder → /api/transcribe (Groq Whisper)
+ * Voice OUTPUT:  ElevenLabs via /api/speak (primary)
+ *                → Web Speech Synthesis (silent fallback on 503 / no key)
  *
- * Voice OUTPUT: Web Speech Synthesis API
- *   - Distinct pitch/rate per character
- *   - Smart voice matching: prefers male/female voices per character,
- *     with multiple fallback tiers before giving up
+ * ElevenLabs route streams audio/mpeg; we decode it with an AudioContext for
+ * low-latency playback. If /api/speak returns 503 (key missing, quota hit,
+ * network error) we silently fall back to the browser's built-in TTS so the
+ * user never sees an error.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -26,7 +24,7 @@ export interface UseVoiceReturn {
   micError: string | null;
   startListening: () => Promise<void>;
   stopListening: () => void;
-  speak: (text: string, character: Character) => void;
+  speak: (text: string, character: Character) => Promise<void>;
   cancelSpeech: () => void;
   micSupported: boolean;
   synthSupported: boolean;
@@ -36,17 +34,15 @@ export function useVoice(
   onTranscript: (text: string) => void,
   voiceEnabled: boolean,
 ): UseVoiceReturn {
-  const [micState,  setMicState]  = useState<MicState>('idle');
+  const [micState,   setMicState]   = useState<MicState>('idle');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [micError,   setMicError]   = useState<string | null>(null);
 
-  // Feature detection — done client-side to avoid SSR mismatch
   const [micSupported,   setMicSupported]   = useState(false);
   const [synthSupported, setSynthSupported] = useState(false);
 
   useEffect(() => {
     setMicSupported(
-      typeof window !== 'undefined' &&
       typeof navigator !== 'undefined' &&
       'mediaDevices' in navigator &&
       typeof MediaRecorder !== 'undefined',
@@ -56,20 +52,24 @@ export function useVoice(
     );
   }, []);
 
-  // Refs keep latest values visible inside async callbacks
-  const onTranscriptRef  = useRef(onTranscript);
-  const voiceEnabledRef  = useRef(voiceEnabled);
-  useEffect(() => { onTranscriptRef.current  = onTranscript;  }, [onTranscript]);
-  useEffect(() => { voiceEnabledRef.current  = voiceEnabled;  }, [voiceEnabled]);
+  const onTranscriptRef = useRef(onTranscript);
+  const voiceEnabledRef = useRef(voiceEnabled);
+  useEffect(() => { onTranscriptRef.current = onTranscript;  }, [onTranscript]);
+  useEffect(() => { voiceEnabledRef.current = voiceEnabled;  }, [voiceEnabled]);
 
-  const recorderRef    = useRef<MediaRecorder | null>(null);
-  const chunksRef      = useRef<BlobPart[]>([]);
-  const autoStopRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recorderRef   = useRef<MediaRecorder | null>(null);
+  const chunksRef     = useRef<BlobPart[]>([]);
+  const autoStopRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Cancel auto-stop timer and recorder on unmount
+  // AudioContext for ElevenLabs streaming playback
+  const audioCtxRef   = useRef<AudioContext | null>(null);
+  const audioSrcRef   = useRef<AudioBufferSourceNode | null>(null);
+
   useEffect(() => () => {
     if (autoStopRef.current) clearTimeout(autoStopRef.current);
     recorderRef.current?.stop();
+    audioSrcRef.current?.stop();
+    audioCtxRef.current?.close();
   }, []);
 
   // ── Voice INPUT ──────────────────────────────────────────────────────────
@@ -77,11 +77,12 @@ export function useVoice(
   const startListening = useCallback(async () => {
     if (micState !== 'idle') return;
 
-    // Stop Buddy speaking if active
-    if (synthSupported) {
+    // Stop any playing speech before listening
+    audioSrcRef.current?.stop();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
-      setIsSpeaking(false);
     }
+    setIsSpeaking(false);
 
     let stream: MediaStream;
     try {
@@ -90,61 +91,46 @@ export function useVoice(
     } catch (err) {
       const name = err instanceof DOMException ? err.name : '';
       if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-        setMicError(
-          'Microphone access denied. Click the lock icon in your browser\'s address bar, allow the microphone, then refresh.',
-        );
+        setMicError("Microphone access denied. Click the lock icon in your browser's address bar, allow the microphone, then refresh.");
       } else if (name === 'NotFoundError') {
         setMicError('No microphone found. Please connect one and try again.');
       } else {
-        setMicError('Could not access your microphone. Please check your browser settings.');
+        setMicError('Could not access your microphone. Check your browser settings.');
       }
       return;
     }
 
-    // Pick the best supported MIME type (Groq Whisper accepts all three)
     const mimeType =
       MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' :
       MediaRecorder.isTypeSupported('audio/mp4')              ? 'audio/mp4'              :
                                                                 'audio/ogg;codecs=opus';
 
-    const recorder    = new MediaRecorder(stream, { mimeType });
+    const recorder   = new MediaRecorder(stream, { mimeType });
     recorderRef.current = recorder;
     chunksRef.current   = [];
 
-    // Collect audio chunks as they arrive
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data);
-    };
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
 
     recorder.onstop = async () => {
-      // Stop all microphone tracks so the browser indicator turns off
       stream.getTracks().forEach((t) => t.stop());
-
       const blob = new Blob(chunksRef.current, { type: mimeType });
 
-      // Ignore recordings under ~200 ms (accidental taps with no speech)
-      if (blob.size < 1000) {
-        setMicState('idle');
-        return;
-      }
+      if (blob.size < 1000) { setMicState('idle'); return; }
 
       setMicState('processing');
-
       try {
         const ext      = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
-        const formData = new FormData();
-        formData.append('audio', new File([blob], `recording.${ext}`, { type: mimeType }));
+        const fd       = new FormData();
+        fd.append('audio', new File([blob], `rec.${ext}`, { type: mimeType }));
 
-        const res  = await fetch('/api/transcribe', { method: 'POST', body: formData });
+        const res  = await fetch('/api/transcribe', { method: 'POST', body: fd });
         const data = await res.json();
-
         if (!res.ok) throw new Error(data.error ?? 'Transcription failed');
 
         const text = (data.text as string).trim();
         if (text) onTranscriptRef.current(text);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Transcription error';
-        setMicError(msg);
+        setMicError(err instanceof Error ? err.message : 'Transcription error');
       } finally {
         setMicState('idle');
       }
@@ -156,68 +142,73 @@ export function useVoice(
       setMicError('Recording failed. Please try again.');
     };
 
-    // Auto-stop after 30 s to prevent runaway recordings
     autoStopRef.current = setTimeout(() => recorder.stop(), 30_000);
-
     recorder.start();
     setMicState('recording');
-  }, [micState, synthSupported]);
+  }, [micState]);
 
   const stopListening = useCallback(() => {
-    if (autoStopRef.current) {
-      clearTimeout(autoStopRef.current);
-      autoStopRef.current = null;
-    }
-    if (recorderRef.current?.state === 'recording') {
-      recorderRef.current.stop(); // triggers onstop → processing flow
-    }
+    if (autoStopRef.current) { clearTimeout(autoStopRef.current); autoStopRef.current = null; }
+    if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
   }, []);
 
   // ── Voice OUTPUT ─────────────────────────────────────────────────────────
 
-  /**
-   * Pick the best available voice for a character.
-   *
-   * Priority:
-   *  1. Exact hint match (e.g. "samantha" in voice name)
-   *  2. Gender preference ("male" / "female" string in voice name)
-   *  3. Any English voice
-   *  4. First available voice (last resort)
-   */
-  function pickVoice(character: Character): SpeechSynthesisVoice | null {
-    const voices = window.speechSynthesis.getVoices();
-    if (voices.length === 0) return null;
+  /** Try ElevenLabs first; fall back to Web Speech on 503 or any error. */
+  const speak = useCallback(async (text: string, character: Character) => {
+    if (!voiceEnabledRef.current) return;
 
-    // 1. Hint match
-    const hinted = voices.find((v) =>
-      character.voiceHint.some((h) => v.name.toLowerCase().includes(h.toLowerCase())),
-    );
-    if (hinted) return hinted;
+    // Cancel whatever is currently playing
+    audioSrcRef.current?.stop();
+    if (synthSupported) window.speechSynthesis.cancel();
+    setIsSpeaking(false);
 
-    // 2. Gender preference (looks for common gendered voice names)
-    const FEMALE_PATTERNS = /samantha|zira|victoria|karen|lisa|susan|fiona|moira|kate|hazel|female|woman/i;
-    const MALE_PATTERNS   = /david|alex|daniel|mark|george|fred|bruce|tom|james|male|man/i;
+    // ── Attempt ElevenLabs ─────────────────────────────────────────────────
+    try {
+      const res = await fetch('/api/speak', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ text, voiceId: character.elevenLabsVoiceId }),
+      });
 
-    if (character.voiceGender === 'female') {
-      const f = voices.find((v) => v.lang.startsWith('en') && FEMALE_PATTERNS.test(v.name));
-      if (f) return f;
-    } else if (character.voiceGender === 'male') {
-      const m = voices.find((v) => v.lang.startsWith('en') && MALE_PATTERNS.test(v.name));
-      if (m) return m;
+      if (res.status === 503) {
+        // ElevenLabs not configured / quota hit — fall through to Web Speech
+        throw new Error('elevenlabs_unavailable');
+      }
+
+      if (!res.ok) throw new Error('elevenlabs_error');
+
+      // Decode the MP3 stream with Web Audio API for low-latency playback
+      const arrayBuffer = await res.arrayBuffer();
+
+      // Lazily create AudioContext (browsers require user gesture first)
+      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+        audioCtxRef.current = new AudioContext();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') await ctx.resume();
+
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      const source      = ctx.createBufferSource();
+      source.buffer     = audioBuffer;
+      source.connect(ctx.destination);
+
+      source.onended = () => setIsSpeaking(false);
+      audioSrcRef.current = source;
+
+      setIsSpeaking(true);
+      source.start(0);
+      return; // success — skip fallback
+    } catch (err) {
+      // Any error (network, quota, not configured) → silent fallback
+      const msg = err instanceof Error ? err.message : '';
+      if (msg !== 'elevenlabs_unavailable' && msg !== 'elevenlabs_error') {
+        console.warn('[useVoice] ElevenLabs failed, falling back to Web Speech:', msg);
+      }
     }
 
-    // 3. Any English voice
-    const eng = voices.find((v) => v.lang.startsWith('en'));
-    if (eng) return eng;
-
-    // 4. Whatever is available
-    return voices[0] ?? null;
-  }
-
-  const speak = useCallback((text: string, character: Character) => {
-    if (!synthSupported || !voiceEnabledRef.current) return;
-
-    window.speechSynthesis.cancel();
+    // ── Web Speech fallback ────────────────────────────────────────────────
+    if (!synthSupported) return;
 
     const utterance    = new SpeechSynthesisUtterance(text);
     utterance.pitch    = character.pitch;
@@ -228,12 +219,22 @@ export function useVoice(
     utterance.onerror  = () => setIsSpeaking(false);
 
     const doSpeak = () => {
-      const voice = pickVoice(character);
+      const voices  = window.speechSynthesis.getVoices();
+      const FEMALE  = /samantha|zira|victoria|karen|lisa|susan|fiona|moira|kate|hazel|female|woman/i;
+      const MALE    = /david|alex|daniel|mark|george|fred|bruce|tom|james|male|man/i;
+
+      // 1. Hint match, 2. Gender match, 3. Any English, 4. First available
+      const voice =
+        voices.find((v) => character.voiceHint.some((h) => v.name.toLowerCase().includes(h.toLowerCase()))) ??
+        (character.voiceGender === 'female' ? voices.find((v) => v.lang.startsWith('en') && FEMALE.test(v.name)) : undefined) ??
+        (character.voiceGender === 'male'   ? voices.find((v) => v.lang.startsWith('en') && MALE.test(v.name))   : undefined) ??
+        voices.find((v) => v.lang.startsWith('en')) ??
+        voices[0];
+
       if (voice) utterance.voice = voice;
       window.speechSynthesis.speak(utterance);
     };
 
-    // Chrome loads voices asynchronously on first call
     if (window.speechSynthesis.getVoices().length === 0) {
       window.speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true });
     } else {
@@ -242,8 +243,8 @@ export function useVoice(
   }, [synthSupported]);
 
   const cancelSpeech = useCallback(() => {
-    if (!synthSupported) return;
-    window.speechSynthesis.cancel();
+    audioSrcRef.current?.stop();
+    if (synthSupported) window.speechSynthesis.cancel();
     setIsSpeaking(false);
   }, [synthSupported]);
 
